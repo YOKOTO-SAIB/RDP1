@@ -49,17 +49,12 @@ jobs:
               param([string]$Subtitle = "REMOTE ACCESS SESSION")
               return @"
           <code>
-          ╔══════════════════════════════════════════╗
-          ║  ███████╗██╗   ██╗███╗   ██╗██╗██╗  ██╗   ║
-          ║  ██╔════╝╚██╗ ██╔╝████╗  ██║██║╚██╗██╔╝   ║
-          ║  █████╗   ╚████╔╝ ██╔██╗ ██║██║ ╚███╔╝    ║
-          ║  ██╔══╝    ╚██╔╝  ██║╚██╗██║██║ ██╔██╗    ║
-          ║  ██║        ██║   ██║ ╚████║██║██╔╝ ██╗   ║
-          ║  ╚═╝        ╚═╝   ╚═╝  ╚═══╝╚═╝╚═╝  ╚═╝   ║
-          ║                                            ║
-          ║          F Y N I X O R   S T U D I O       ║
-          ║          $Subtitle
-          ╚══════════════════════════════════════════╝
+          ╭─────────────────────────────────╮
+          │                                   │
+          │      ⚡ F Y N I X O R  S T U D I O ⚡      │
+          │          $Subtitle
+          │                                   │
+          ╰─────────────────────────────────╯
           </code>
           "@
           }
@@ -127,7 +122,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path C:\ngrok | Out-Null
-          $zipUrl = "https://ngrok-agent.s3.amazonaws.com/ngrok-v3-stable-windows-amd64.zip"
+          $zipUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
           $zipPath = "$env:TEMP\ngrok.zip"
           Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
           Expand-Archive -Path $zipPath -DestinationPath C:\ngrok -Force
