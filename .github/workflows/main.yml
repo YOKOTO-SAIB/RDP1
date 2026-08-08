@@ -132,8 +132,12 @@ jobs:
       - name: Start ngrok TCP Tunnel
         shell: pwsh
         run: |
-          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
+          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" `
+            -RedirectStandardOutput "C:\ngrok\ngrok-log.txt" `
+            -RedirectStandardError "C:\ngrok\ngrok-err.txt" `
+            -WindowStyle Hidden
           Start-Sleep -Seconds 8
+
           $tunnelInfo = $null
           $retries = 0
           while (-not $tunnelInfo -and $retries -lt 10) {
@@ -148,14 +152,20 @@ jobs:
               if (-not $tunnelInfo) { Start-Sleep -Seconds 3 }
               $retries++
           }
+
           if (-not $tunnelInfo) {
-              Write-Error "Gagal dapetin ngrok tunnel URL."
+              Write-Host "===== ISI LOG NGROK ====="
+              if (Test-Path "C:\ngrok\ngrok-log.txt") { Get-Content "C:\ngrok\ngrok-log.txt" }
+              if (Test-Path "C:\ngrok\ngrok-err.txt") { Get-Content "C:\ngrok\ngrok-err.txt" }
+              Write-Error "Gagal dapetin ngrok tunnel URL. Cek log di atas buat tau penyebabnya."
               exit 1
           }
+
           $cleanAddr = $tunnelInfo -replace "tcp://", ""
           $parts = $cleanAddr -split ":"
           $ngrokHost = $parts[0]
           $ngrokPort = $parts[1]
+
           echo "NGROK_HOST=$ngrokHost" >> $env:GITHUB_ENV
           echo "NGROK_PORT=$ngrokPort" >> $env:GITHUB_ENV
           echo "NGROK_ADDR=$cleanAddr" >> $env:GITHUB_ENV
@@ -207,11 +217,13 @@ jobs:
               Start-Sleep -Seconds 60
               $now = Get-Date
               $elapsed = $now - $startTime
+
               $tunnelAlive = $false
               try {
                   $resp = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
                   if ($resp.tunnels.Count -gt 0) { $tunnelAlive = $true }
               } catch {}
+
               if (-not $tunnelAlive) {
                   $failCount++
                   Write-Host "[$now] ngrok tunnel gak kedetect! ($failCount)"
@@ -223,6 +235,7 @@ jobs:
               } else {
                   $failCount = 0
               }
+
               if (($now - $lastHeartbeat).TotalMinutes -ge $heartbeatMinutes) {
                   $remaining = [TimeSpan]::FromMinutes(350) - $elapsed
                   $sysInfo = Get-SystemInfoBlock
