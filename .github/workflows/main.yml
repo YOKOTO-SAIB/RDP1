@@ -118,58 +118,46 @@ jobs:
               Write-Error "User creation failed"
               exit 1
           }
-      - name: Install ngrok
+      - name: Install cloudflared
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path C:\ngrok | Out-Null
-          $zipUrl = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
-          $zipPath = "$env:TEMP\ngrok.zip"
-          Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
-          Expand-Archive -Path $zipPath -DestinationPath C:\ngrok -Force
-          Remove-Item $zipPath -Force
-          & C:\ngrok\ngrok.exe config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
-          Write-Host "ngrok installed and authenticated."
-      - name: Start ngrok TCP Tunnel
+          New-Item -ItemType Directory -Force -Path C:\cloudflared | Out-Null
+          $exeUrl = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+          Invoke-WebRequest -Uri $exeUrl -OutFile "C:\cloudflared\cloudflared.exe"
+          Write-Host "cloudflared installed."
+      - name: Start Cloudflare TCP Tunnel
         shell: pwsh
         run: |
-          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389 --log=stdout" `
-            -RedirectStandardOutput "C:\ngrok\ngrok-log.txt" `
-            -RedirectStandardError "C:\ngrok\ngrok-err.txt" `
+          Start-Process -FilePath "C:\cloudflared\cloudflared.exe" `
+            -ArgumentList "tunnel --url tcp://localhost:3389" `
+            -RedirectStandardOutput "C:\cloudflared\cf-log.txt" `
+            -RedirectStandardError "C:\cloudflared\cf-err.txt" `
             -WindowStyle Hidden
-          Start-Sleep -Seconds 8
+          Start-Sleep -Seconds 10
 
-          $tunnelInfo = $null
+          $cfHostname = $null
           $retries = 0
-          while (-not $tunnelInfo -and $retries -lt 10) {
-              try {
-                  $resp = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
-                  if ($resp.tunnels.Count -gt 0) {
-                      $tunnelInfo = $resp.tunnels[0].public_url
+          while (-not $cfHostname -and $retries -lt 10) {
+              if (Test-Path "C:\cloudflared\cf-err.txt") {
+                  $content = Get-Content "C:\cloudflared\cf-err.txt" -Raw
+                  if ($content -match 'https://([a-z0-9\-]+\.trycloudflare\.com)') {
+                      $cfHostname = $matches[1]
                   }
-              } catch {
-                  Write-Host "Nunggu ngrok API siap... ($retries)"
               }
-              if (-not $tunnelInfo) { Start-Sleep -Seconds 3 }
+              if (-not $cfHostname) { Start-Sleep -Seconds 3 }
               $retries++
           }
 
-          if (-not $tunnelInfo) {
-              Write-Host "===== ISI LOG NGROK ====="
-              if (Test-Path "C:\ngrok\ngrok-log.txt") { Get-Content "C:\ngrok\ngrok-log.txt" }
-              if (Test-Path "C:\ngrok\ngrok-err.txt") { Get-Content "C:\ngrok\ngrok-err.txt" }
-              Write-Error "Gagal dapetin ngrok tunnel URL. Cek log di atas buat tau penyebabnya."
+          if (-not $cfHostname) {
+              Write-Host "===== ISI LOG CLOUDFLARED ====="
+              if (Test-Path "C:\cloudflared\cf-log.txt") { Get-Content "C:\cloudflared\cf-log.txt" }
+              if (Test-Path "C:\cloudflared\cf-err.txt") { Get-Content "C:\cloudflared\cf-err.txt" }
+              Write-Error "Gagal dapetin hostname Cloudflare Tunnel. Cek log di atas."
               exit 1
           }
 
-          $cleanAddr = $tunnelInfo -replace "tcp://", ""
-          $parts = $cleanAddr -split ":"
-          $ngrokHost = $parts[0]
-          $ngrokPort = $parts[1]
-
-          echo "NGROK_HOST=$ngrokHost" >> $env:GITHUB_ENV
-          echo "NGROK_PORT=$ngrokPort" >> $env:GITHUB_ENV
-          echo "NGROK_ADDR=$cleanAddr" >> $env:GITHUB_ENV
-          Write-Host "ngrok tunnel aktif: $cleanAddr"
+          echo "CF_HOSTNAME=$cfHostname" >> $env:GITHUB_ENV
+          Write-Host "Cloudflare Tunnel aktif: $cfHostname"
       - name: Verify RDP Accessibility
         shell: pwsh
         run: |
@@ -178,7 +166,7 @@ jobs:
               Write-Error "TCP connection to local RDP port 3389 failed"
               exit 1
           }
-          Write-Host "RDP lokal aktif, siap diteruskan lewat ngrok."
+          Write-Host "RDP lokal aktif, siap diteruskan lewat Cloudflare Tunnel."
       - name: Notify - Session Ready (Full Credentials)
         shell: pwsh
         run: |
@@ -188,10 +176,8 @@ jobs:
           $msg = @"
           $banner
           ✅ <b>RDP siap dipakai!</b>
-          📍 <b>Address (isi di PC name)</b>
-          <code>$env:NGROK_HOST</code>
-          🔌 <b>Port</b>
-          <code>$env:NGROK_PORT</code>
+          🌐 <b>Tunnel Hostname</b>
+          <code>$env:CF_HOSTNAME</code>
           👤 <b>Username</b>
           <code>$env:RDP_USERNAME</code>
           🔑 <b>Password</b>
@@ -199,7 +185,11 @@ jobs:
           ────────────────────
           $sysInfo
           ────────────────────
-          ℹ️ Di app RD Client, isi "PC name" pake Address, terus tambahin titik dua + Port di belakangnya. Contoh: <code>$env:NGROK_ADDR</code>
+          ℹ️ <b>Cara connect (customer):</b>
+          1. Download cloudflared: <code>github.com/cloudflare/cloudflared/releases/latest</code>
+          2. Buka terminal, jalanin:
+          <code>cloudflared access tcp --hostname $env:CF_HOSTNAME --url localhost:3390</code>
+          3. Buka app RD Client, connect ke <code>localhost:3390</code> pake username/password di atas.
           ⏱ Sesi ini otomatis mati di ~350 menit.
           "@
           Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $msg | Out-Null
@@ -220,15 +210,15 @@ jobs:
 
               $tunnelAlive = $false
               try {
-                  $resp = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
-                  if ($resp.tunnels.Count -gt 0) { $tunnelAlive = $true }
+                  $proc = Get-Process cloudflared -ErrorAction SilentlyContinue
+                  if ($proc) { $tunnelAlive = $true }
               } catch {}
 
               if (-not $tunnelAlive) {
                   $failCount++
-                  Write-Host "[$now] ngrok tunnel gak kedetect! ($failCount)"
+                  Write-Host "[$now] cloudflared process gak kedetect! ($failCount)"
                   if ($failCount -ge $maxFailBeforeAlert) {
-                      $alertMsg = "⚠️ <b>PERINGATAN</b>`nngrok tunnel FYnixorStudio kedetect mati.`nDurasi berjalan: $(Format-Duration $elapsed)"
+                      $alertMsg = "⚠️ <b>PERINGATAN</b>`nCloudflare Tunnel FYnixorStudio kedetect mati.`nDurasi berjalan: $(Format-Duration $elapsed)"
                       Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $alertMsg | Out-Null
                       $failCount = 0
                   }
@@ -242,7 +232,7 @@ jobs:
                   $hbMsg = @"
           💓 <b>Heartbeat - FYnixorStudio RDP</b>
           🟢 Status: Alive
-          📍 Address: <code>$env:NGROK_ADDR</code>
+          📍 Hostname: <code>$env:CF_HOSTNAME</code>
           ⏱ Uptime: $(Format-Duration $elapsed)
           ⏳ Sisa waktu: $(Format-Duration $remaining)
           $sysInfo
