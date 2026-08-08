@@ -2,6 +2,7 @@ name: FYnixorStudio-RDP
 on:
   workflow_dispatch:
 env:
+  RDP_HOSTNAME: fynixorstudio
   RDP_USERNAME: YOKOTO
   RDP_PASSWORD: FYnixor87654321!
   TG_TOKEN: 8593403659:AAGHthMyf-4MfbF4_eeOoJSab1YDk-dgSso
@@ -123,57 +124,60 @@ jobs:
               Write-Error "User creation failed"
               exit 1
           }
-      - name: Install ngrok
+      - name: Install Tailscale
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path C:\ngrok | Out-Null
-          $zipUrl = "https://ngrok-agent.s3.amazonaws.com/ngrok-v3-stable-windows-amd64.zip"
-          $zipPath = "$env:TEMP\ngrok.zip"
-          Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
-          Expand-Archive -Path $zipPath -DestinationPath C:\ngrok -Force
-          Remove-Item $zipPath -Force
-          & C:\ngrok\ngrok.exe config add-authtoken ${{ secrets.NGROK_AUTHTOKEN }}
-          Write-Host "ngrok installed and authenticated."
-      - name: Start ngrok TCP Tunnel
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installerPath = "$env:TEMP\tailscale.msi"
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+          Remove-Item $installerPath -Force
+          Write-Host "Tailscale installed."
+      - name: Restore persistent Tailscale identity
+        id: cache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: C:\ProgramData\Tailscale
+          key: tailscale-state-fynixorstudio
+      - name: Establish Tailscale Connection
         shell: pwsh
         run: |
-          Start-Process -FilePath "C:\ngrok\ngrok.exe" -ArgumentList "tcp 3389" -WindowStyle Hidden
-          Start-Sleep -Seconds 8
-          $tunnelInfo = $null
+          Stop-Service Tailscale -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 3
+          Start-Service Tailscale
+          Start-Sleep -Seconds 3
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=$env:RDP_HOSTNAME `
+            --accept-dns=true
+          $tsIP = $null
           $retries = 0
-          while (-not $tunnelInfo -and $retries -lt 10) {
-              try {
-                  $resp = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
-                  if ($resp.tunnels.Count -gt 0) {
-                      $tunnelInfo = $resp.tunnels[0].public_url
-                  }
-              } catch {
-                  Write-Host "Nunggu ngrok API siap... ($retries)"
-              }
-              if (-not $tunnelInfo) { Start-Sleep -Seconds 3 }
+          while (-not $tsIP -and $retries -lt 10) {
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+              Start-Sleep -Seconds 5
               $retries++
           }
-          if (-not $tunnelInfo) {
-              Write-Error "Gagal dapetin ngrok tunnel URL."
+          if (-not $tsIP) {
+              Write-Error "Tailscale IP not assigned. Exiting."
               exit 1
           }
-          $cleanAddr = $tunnelInfo -replace "tcp://", ""
-          $parts = $cleanAddr -split ":"
-          $ngrokHost = $parts[0]
-          $ngrokPort = $parts[1]
-          echo "NGROK_HOST=$ngrokHost" >> $env:GITHUB_ENV
-          echo "NGROK_PORT=$ngrokPort" >> $env:GITHUB_ENV
-          echo "NGROK_ADDR=$cleanAddr" >> $env:GITHUB_ENV
-          Write-Host "ngrok tunnel aktif: $cleanAddr"
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP: $tsIP"
+      - name: Save persistent Tailscale identity
+        if: steps.cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\ProgramData\Tailscale
+          key: tailscale-state-fynixorstudio
       - name: Verify RDP Accessibility
         shell: pwsh
         run: |
-          $testResult = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to local RDP port 3389 failed"
+              Write-Error "TCP connection to RDP port 3389 failed"
               exit 1
           }
-          Write-Host "RDP lokal aktif, siap diteruskan lewat ngrok."
+          Write-Host "TCP connectivity successful!"
       - name: Notify - Session Ready (Full Credentials)
         shell: pwsh
         run: |
@@ -183,19 +187,19 @@ jobs:
           $msg = @"
           $banner
           ✅ <b>RDP siap dipakai!</b>
-          📍 <b>Address (isi di PC name)</b>
-          <code>$env:NGROK_HOST</code>
-          🔌 <b>Port</b>
-          <code>$env:NGROK_PORT</code>
+          📍 <b>IP Address</b>
+          <code>$env:TAILSCALE_IP</code>
           👤 <b>Username</b>
           <code>$env:RDP_USERNAME</code>
           🔑 <b>Password</b>
           <code>$env:RDP_PASSWORD</code>
+          🔌 <b>Port</b>
+          <code>3389</code>
           ────────────────────
           $sysInfo
           ────────────────────
-          ℹ️ Di app RD Client, isi "PC name" pake Address, terus tambahin titik dua + Port di belakangnya. Contoh: <code>$env:NGROK_ADDR</code>
-          ⏱ Sesi ini otomatis mati di ~350 menit.
+          ⏱ Sesi ini otomatis mati di ~350 menit (batas GitHub Actions).
+          Tap teks di atas buat langsung copy.
           "@
           Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $msg | Out-Null
       - name: Maintain Connection (Watchdog + Heartbeat)
@@ -212,20 +216,23 @@ jobs:
               Start-Sleep -Seconds 60
               $now = Get-Date
               $elapsed = $now - $startTime
-              $tunnelAlive = $false
-              try {
-                  $resp = Invoke-RestMethod -Uri "http://127.0.0.1:4040/api/tunnels" -TimeoutSec 5
-                  if ($resp.tunnels.Count -gt 0) { $tunnelAlive = $true }
-              } catch {}
-              if (-not $tunnelAlive) {
+              $currentIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
+              if (-not $currentIP) {
                   $failCount++
-                  Write-Host "[$now] ngrok tunnel gak kedetect! ($failCount)"
+                  Write-Host "[$now] Tailscale IP hilang! Percobaan reconnect ($failCount)..."
+                  & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
+                      --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+                      --hostname=$env:RDP_HOSTNAME --accept-dns=true 2>$null
                   if ($failCount -ge $maxFailBeforeAlert) {
-                      $alertMsg = "⚠️ <b>PERINGATAN</b>`nngrok tunnel FYnixorStudio kedetect mati.`nDurasi berjalan: $(Format-Duration $elapsed)"
+                      $alertMsg = "⚠️ <b>PERINGATAN</b>`nTailscale terputus dan gagal reconnect $failCount kali di runner FYnixorStudio.`nDurasi berjalan: $(Format-Duration $elapsed)"
                       Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $alertMsg | Out-Null
                       $failCount = 0
                   }
               } else {
+                  if ($failCount -gt 0) {
+                      $recoverMsg = "✅ Tailscale berhasil reconnect otomatis. IP: <code>$currentIP</code>"
+                      Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $recoverMsg | Out-Null
+                  }
                   $failCount = 0
               }
               if (($now - $lastHeartbeat).TotalMinutes -ge $heartbeatMinutes) {
@@ -234,7 +241,7 @@ jobs:
                   $hbMsg = @"
           💓 <b>Heartbeat - FYnixorStudio RDP</b>
           🟢 Status: Alive
-          📍 Address: <code>$env:NGROK_ADDR</code>
+          📍 IP: <code>$currentIP</code>
           ⏱ Uptime: $(Format-Duration $elapsed)
           ⏳ Sisa waktu: $(Format-Duration $remaining)
           $sysInfo
