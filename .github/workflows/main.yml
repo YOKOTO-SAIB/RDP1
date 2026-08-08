@@ -1,14 +1,13 @@
 name: FYnixorStudio-RDP
 on:
   workflow_dispatch:
-    inputs:
-      heartbeat_minutes:
-        description: 'Interval heartbeat ke Telegram (menit)'
-        required: false
-        default: '15'
 env:
   RDP_HOSTNAME: fynixorstudio
-  HEARTBEAT_MINUTES: ${{ github.event.inputs.heartbeat_minutes || '15' }}
+  RDP_USERNAME: YOKOTO
+  RDP_PASSWORD: FYnixor87654321!
+  TG_TOKEN: 8593403659:AAGHthMyf-4MfbF4_eeOoJSab1YDk-dgSso
+  TG_CHAT: "7016045840"
+  HEARTBEAT_MINUTES: 15
 jobs:
   secure-rdp:
     runs-on: windows-latest
@@ -89,9 +88,6 @@ jobs:
           Write-Host "Helper functions saved to C:\actions\helpers.ps1"
       - name: Notify - Provisioning Started
         shell: pwsh
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           . C:\actions\helpers.ps1
           $banner = Get-AsciiBanner -Subtitle "⏳ SEDANG DI-SETUP..."
@@ -111,25 +107,9 @@ jobs:
             dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
           Write-Host "RDP core settings applied."
-      - name: Create RDP User (Fixed Credentials)
+      - name: Create RDP User (Hardcoded Credentials)
         shell: pwsh
-        env:
-          RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:RDP_PASSWORD)) {
-              Write-Error "Secret RDP_PASSWORD kosong! Cek Settings > Secrets and variables > Actions."
-              exit 1
-          }
-          $hasUpper   = $env:RDP_PASSWORD -cmatch '[A-Z]'
-          $hasLower   = $env:RDP_PASSWORD -cmatch '[a-z]'
-          $hasNumber  = $env:RDP_PASSWORD -cmatch '[0-9]'
-          $hasSpecial = $env:RDP_PASSWORD -match '[^a-zA-Z0-9]'
-          $categoriesMet = @($hasUpper, $hasLower, $hasNumber, $hasSpecial) | Where-Object { $_ } | Measure-Object | Select-Object -ExpandProperty Count
-          if ($env:RDP_PASSWORD.Length -lt 8 -or $categoriesMet -lt 3) {
-              Write-Error "Password RDP_PASSWORD gak memenuhi syarat Windows: minimal 8 karakter dan minimal 3 dari 4 (huruf besar, huruf kecil, angka, simbol). Update secretnya dulu."
-              exit 1
-          }
           $securePass = ConvertTo-SecureString $env:RDP_PASSWORD -AsPlainText -Force
           if (Get-LocalUser -Name $env:RDP_USERNAME -ErrorAction SilentlyContinue) {
               Set-LocalUser -Name $env:RDP_USERNAME -Password $securePass
@@ -200,11 +180,6 @@ jobs:
           Write-Host "TCP connectivity successful!"
       - name: Notify - Session Ready (Full Credentials)
         shell: pwsh
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
-          RDP_USERNAME: ${{ secrets.RDP_USERNAME }}
-          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           . C:\actions\helpers.ps1
           $banner = Get-AsciiBanner -Subtitle "✅ SESSION AKTIF"
@@ -229,9 +204,6 @@ jobs:
           Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $msg | Out-Null
       - name: Maintain Connection (Watchdog + Heartbeat)
         shell: pwsh
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           . C:\actions\helpers.ps1
           $startTime = Get-Date
@@ -282,9 +254,6 @@ jobs:
       - name: Notify - Session Ended
         if: always()
         shell: pwsh
-        env:
-          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           . C:\actions\helpers.ps1
           $banner = Get-AsciiBanner -Subtitle "🔴 SESSION BERAKHIR"
