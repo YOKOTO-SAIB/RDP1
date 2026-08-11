@@ -1,6 +1,15 @@
 name: FYnixorStudio-RDP
 on:
   workflow_dispatch:
+    inputs:
+      ip_mode:
+        description: 'Mode IP: reuse (IP sama) atau new (IP baru)'
+        required: true
+        type: choice
+        options:
+          - reuse
+          - new
+        default: reuse
 env:
   RDP_HOSTNAME: fynixorstudio
   RDP_USERNAME: YOKOTO
@@ -11,7 +20,7 @@ env:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 450
+    timeout-minutes: 350
     steps:
       - name: Setup Helper Functions
         shell: pwsh
@@ -50,17 +59,10 @@ jobs:
               param([string]$Subtitle = "REMOTE ACCESS SESSION")
               return @"
           <code>
-          ╔══════════════════════════════════════════╗
-          ║  ███████╗██╗   ██╗███╗   ██╗██╗██╗  ██╗   ║
-          ║  ██╔════╝╚██╗ ██╔╝████╗  ██║██║╚██╗██╔╝   ║
-          ║  █████╗   ╚████╔╝ ██╔██╗ ██║██║ ╚███╔╝    ║
-          ║  ██╔══╝    ╚██╔╝  ██║╚██╗██║██║ ██╔██╗    ║
-          ║  ██║        ██║   ██║ ╚████║██║██╔╝ ██╗   ║
-          ║  ╚═╝        ╚═╝   ╚═╝  ╚═══╝╚═╝╚═╝  ╚═╝   ║
-          ║                                            ║
-          ║          F Y N I X O R   S T U D I O       ║
-          ║          $Subtitle
-          ╚══════════════════════════════════════════╝
+          ╭─────────────────────────────────╮
+          │      ⚡ F Y N I X O R  S T U D I O ⚡      │
+          │          $Subtitle
+          ╰─────────────────────────────────╯
           </code>
           "@
           }
@@ -90,8 +92,9 @@ jobs:
         shell: pwsh
         run: |
           . C:\actions\helpers.ps1
-          $banner = Get-AsciiBanner -Subtitle "⏳ SEDANG DI-SETUP..."
-          $msg = "$banner`n🚀 Runner GitHub Actions mulai provisioning RDP.`nTunggu ±1-2 menit buat kredensial lengkap."
+          $modeLabel = if ("${{ github.event.inputs.ip_mode }}" -eq "new") { "IP BARU" } else { "IP LAMA (reuse)" }
+          $banner = Get-AsciiBanner -Subtitle "⏳ SEDANG DI-SETUP ($modeLabel)..."
+          $msg = "$banner`n🚀 Runner mulai provisioning RDP.`nMode IP: <b>$modeLabel</b>`nTunggu ±1-2 menit."
           Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $msg | Out-Null
       - name: Configure Core RDP Settings
         shell: pwsh
@@ -133,12 +136,15 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
           Write-Host "Tailscale installed."
-      - name: Restore persistent Tailscale identity
+      - name: Restore persistent Tailscale identity (hanya kalau mode=reuse)
         id: cache-restore
+        if: ${{ github.event.inputs.ip_mode == 'reuse' }}
         uses: actions/cache/restore@v4
         with:
           path: C:\ProgramData\Tailscale
-          key: tailscale-state-fynixorstudio
+          key: tailscale-state-fynixorstudio-latest
+          restore-keys: |
+            tailscale-state-fynixorstudio-
       - name: Establish Tailscale Connection
         shell: pwsh
         run: |
@@ -146,10 +152,19 @@ jobs:
           Start-Sleep -Seconds 3
           Start-Service Tailscale
           Start-Sleep -Seconds 3
+
+          $hostnameToUse = if ("${{ github.event.inputs.ip_mode }}" -eq "new") {
+              "$env:RDP_HOSTNAME-$(Get-Random -Maximum 99999)"
+          } else {
+              $env:RDP_HOSTNAME
+          }
+
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname=$env:RDP_HOSTNAME `
-            --accept-dns=true
+            --hostname=$hostnameToUse `
+            --accept-dns=true `
+            --force-reauth
+
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
@@ -162,13 +177,13 @@ jobs:
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
-          Write-Host "Tailscale IP: $tsIP"
-      - name: Save persistent Tailscale identity
-        if: steps.cache-restore.outputs.cache-hit != 'true'
+          Write-Host "Tailscale IP: $tsIP (mode: ${{ github.event.inputs.ip_mode }})"
+      - name: Save persistent Tailscale identity (selalu, biar reuse berikutnya dapet yang terbaru)
+        if: always()
         uses: actions/cache/save@v4
         with:
           path: C:\ProgramData\Tailscale
-          key: tailscale-state-fynixorstudio
+          key: tailscale-state-fynixorstudio-latest-${{ github.run_id }}
       - name: Verify RDP Accessibility
         shell: pwsh
         run: |
@@ -182,11 +197,12 @@ jobs:
         shell: pwsh
         run: |
           . C:\actions\helpers.ps1
+          $modeLabel = if ("${{ github.event.inputs.ip_mode }}" -eq "new") { "🆕 IP BARU" } else { "♻️ IP LAMA (reuse)" }
           $banner = Get-AsciiBanner -Subtitle "✅ SESSION AKTIF"
           $sysInfo = Get-SystemInfoBlock
           $msg = @"
           $banner
-          ✅ <b>RDP siap dipakai!</b>
+          ✅ <b>RDP siap dipakai!</b> ($modeLabel)
           📍 <b>IP Address</b>
           <code>$env:TAILSCALE_IP</code>
           👤 <b>Username</b>
@@ -198,8 +214,7 @@ jobs:
           ────────────────────
           $sysInfo
           ────────────────────
-          ⏱ Sesi ini otomatis mati di ~350 menit (batas GitHub Actions).
-          Tap teks di atas buat langsung copy.
+          ⏱ Sesi ini otomatis mati di ~350 menit.
           "@
           Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $msg | Out-Null
       - name: Maintain Connection (Watchdog + Heartbeat)
@@ -211,7 +226,7 @@ jobs:
           $lastHeartbeat = $startTime
           $failCount = 0
           $maxFailBeforeAlert = 2
-          Write-Host "Watchdog started. Heartbeat tiap $heartbeatMinutes menit."
+          Write-Host "Watchdog started."
           while ($true) {
               Start-Sleep -Seconds 60
               $now = Get-Date
@@ -219,20 +234,12 @@ jobs:
               $currentIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4 2>$null
               if (-not $currentIP) {
                   $failCount++
-                  Write-Host "[$now] Tailscale IP hilang! Percobaan reconnect ($failCount)..."
-                  & "$env:ProgramFiles\Tailscale\tailscale.exe" up `
-                      --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-                      --hostname=$env:RDP_HOSTNAME --accept-dns=true 2>$null
                   if ($failCount -ge $maxFailBeforeAlert) {
-                      $alertMsg = "⚠️ <b>PERINGATAN</b>`nTailscale terputus dan gagal reconnect $failCount kali di runner FYnixorStudio.`nDurasi berjalan: $(Format-Duration $elapsed)"
+                      $alertMsg = "⚠️ <b>PERINGATAN</b>`nTailscale terputus.`nDurasi berjalan: $(Format-Duration $elapsed)"
                       Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $alertMsg | Out-Null
                       $failCount = 0
                   }
               } else {
-                  if ($failCount -gt 0) {
-                      $recoverMsg = "✅ Tailscale berhasil reconnect otomatis. IP: <code>$currentIP</code>"
-                      Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $recoverMsg | Out-Null
-                  }
                   $failCount = 0
               }
               if (($now - $lastHeartbeat).TotalMinutes -ge $heartbeatMinutes) {
@@ -248,7 +255,6 @@ jobs:
           "@
                   Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $hbMsg | Out-Null
                   $lastHeartbeat = $now
-                  Write-Host "[$now] Heartbeat terkirim."
               }
           }
       - name: Notify - Session Ended
@@ -258,5 +264,5 @@ jobs:
           . C:\actions\helpers.ps1
           $banner = Get-AsciiBanner -Subtitle "🔴 SESSION BERAKHIR"
           $status = "${{ job.status }}"
-          $msg = "$banner`n🔴 <b>Sesi RDP FYnixorStudio berakhir.</b>`nStatus job: <b>$status</b>`nRunner dimatikan / workflow selesai / dibatalkan."
+          $msg = "$banner`n🔴 <b>Sesi RDP FYnixorStudio berakhir.</b>`nStatus job: <b>$status</b>"
           Send-TelegramMessage -Token $env:TG_TOKEN -ChatId $env:TG_CHAT -Text $msg | Out-Null
