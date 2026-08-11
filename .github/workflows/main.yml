@@ -20,7 +20,7 @@ env:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 350
+    timeout-minutes: 950
     steps:
       - name: Setup Helper Functions
         shell: pwsh
